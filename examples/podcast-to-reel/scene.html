@@ -1,0 +1,244 @@
+<!doctype html>
+<!-- Mystery Bounty reel. Everything on screen is a pure function of t. Media comes from base.mp4 (built by cut.py). -->
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas{position:absolute;inset:0}</style>
+</head><body>
+<canvas id="c"></canvas>
+<script type="module">
+const TL = await fetch('./timeline.json').then(r => r.json());
+window.SCENE = { width: 1080, height: 1920, fps: TL.fps, duration: TL.duration };
+const W = 1080, H = 1920, FPS = TL.fps;
+const cv = document.getElementById('c'); cv.width = W; cv.height = H;
+const ctx = cv.getContext('2d');
+
+const RED = '#EE3B33', NAVY = '#090b1a', WHITE = '#F4F5FA';
+const clamp01 = x => Math.max(0, Math.min(1, x));
+const easeOut = x => 1 - Math.pow(1 - clamp01(x), 3);
+const easeBack = x => { x = clamp01(x); const c = 1.6; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+const font = (px, w = 800) => `italic ${w} ${px}px Montserrat`;
+
+// ---------- assets
+const video = document.createElement('video');
+const img = src => new Promise(r => { const i = new Image(); i.onload = () => r(i); i.src = src; });
+let LOGO, HEADER, GRAIN = [];
+window.ready = (async () => {
+  const faces = [['ExtraBoldItalic', 800], ['BlackItalic', 900], ['SemiBoldItalic', 600], ['BoldItalic', 700]];
+  for (const [f, w] of faces) {
+    const ff = new FontFace('Montserrat', `url(fonts/Montserrat-${f}.ttf)`, { style: 'italic', weight: String(w) });
+    document.fonts.add(await ff.load());
+  }
+  const blob = await fetch('./base.mp4').then(r => r.blob());
+  video.src = URL.createObjectURL(blob); video.muted = true; video.preload = 'auto';
+  await new Promise(r => video.addEventListener('loadeddata', r, { once: true }));
+  [LOGO, HEADER] = await Promise.all([img('assets/logo_a.png'), img('assets/header_a.png')]);
+  // seeded film grain tiles
+  let seed = 7; const rng = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let k = 0; k < 6; k++) {
+    const g = document.createElement('canvas'); g.width = 540; g.height = 960;
+    const gx = g.getContext('2d'), id = gx.createImageData(540, 960);
+    for (let i = 0; i < id.data.length; i += 4) { const v = rng() * 255; id.data[i] = id.data[i + 1] = id.data[i + 2] = v; id.data[i + 3] = 255; }
+    gx.putImageData(id, 0, 0); GRAIN.push(g);
+  }
+})();
+
+async function seek(t) {
+  const target = Math.min(t, video.duration - 0.5 / FPS);
+  if (Math.abs(video.currentTime - target) < 1e-4) return;
+  await new Promise(r => { video.addEventListener('seeked', r, { once: true }); video.currentTime = target; });
+}
+
+// ---------- layout
+const CAP_X = 82, CAP_Y = 330, CAP_MAXW = 916;
+const CARD = {
+  cam: { x: 70, y: 900, w: 940, h: 526, sw: 1080, sh: 604 },
+  grid: { x: 100, y: 880, w: 880, h: 775, sw: 1080, sh: 951 },
+};
+const STYLE = { s: { px: 50, w: 800, col: WHITE }, b: { px: 104, w: 800, col: WHITE }, r: { px: 122, w: 900, col: RED } };
+const EV_TAG = { strategy: 'HIJACK JAMS 11BB  ·  BIG BLIND', pp: 'PRIZE POOL EV', ko: 'KNOCKOUT EV', ev: 'TOTAL EV' };
+
+function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+
+function background(t) {
+  ctx.fillStyle = NAVY; ctx.fillRect(0, 0, W, H);
+  let g = ctx.createRadialGradient(80, 60, 0, 80, 60, 1500);
+  g.addColorStop(0, 'rgba(58,66,150,0.55)'); g.addColorStop(0.45, 'rgba(30,36,92,0.25)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  g = ctx.createRadialGradient(W, H, 0, W, H, 1200);
+  g.addColorStop(0, 'rgba(40,46,110,0.35)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // faint diagonal bands drifting (as in the podcast backdrop)
+  ctx.save(); ctx.globalAlpha = 0.035; ctx.fillStyle = '#8fa0ff';
+  for (let k = 0; k < 5; k++) {
+    const x0 = -600 + k * 420 + ((t * 14) % 420);
+    ctx.beginPath(); ctx.moveTo(x0, H); ctx.lineTo(x0 + 140, H); ctx.lineTo(x0 + 140 + 1100, 0); ctx.lineTo(x0 + 1100, 0); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function header(alpha) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.drawImage(HEADER, 64, 128, 300, 300 * HEADER.height / HEADER.width);
+  // topic pill
+  ctx.font = font(30, 800); const label = 'MYSTERY BOUNTY'; const tw = ctx.measureText(label).width;
+  const px = W - 70 - tw - 44, py = 150;
+  roundRect(px, py, tw + 44, 56, 10); ctx.fillStyle = RED; ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.fillText(label, px + 22, py + 30);
+  ctx.restore();
+}
+
+function media(shot, t) {
+  const p = clamp01((t - shot.t0) / Math.max(0.1, shot.t1 - shot.t0));
+  const intro = clamp01((t - shot.t0) / 0.28);
+  if (shot.kind === 'broll') {
+    const s = 1.0 + 0.05 * p;  // slow push-in
+    ctx.drawImage(video, 0, 0, 1080, 1920, (W - W * s) / 2, (H - H * s) / 2, W * s, H * s);
+    // legibility: dark top gradient, blue-ish grade like the source b-roll
+    let g = ctx.createLinearGradient(0, 0, 0, 1250);
+    g.addColorStop(0, 'rgba(6,8,22,0.92)'); g.addColorStop(0.55, 'rgba(6,8,22,0.55)'); g.addColorStop(1, 'rgba(6,8,22,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, 1250);
+    g = ctx.createLinearGradient(0, 1500, 0, H); g.addColorStop(0, 'rgba(6,8,22,0)'); g.addColorStop(1, 'rgba(6,8,22,0.7)');
+    ctx.fillStyle = g; ctx.fillRect(0, 1500, W, 420);
+    return;
+  }
+  const C = CARD[shot.kind];
+  const pop = 1 + 0.035 * (1 - easeOut(intro));
+  const cx = C.x + C.w / 2, cy = C.y + C.h / 2, w = C.w * pop, h = C.h * pop, x = cx - w / 2, y = cy - h / 2;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.55)'; ctx.shadowBlur = 60; ctx.shadowOffsetY = 26;
+  roundRect(x, y, w, h, 22); ctx.fillStyle = '#000'; ctx.fill();
+  ctx.restore();
+  ctx.save(); roundRect(x, y, w, h, 22); ctx.clip();
+  const z = 1 + 0.035 * p, sw = C.sw / z, sh = C.sh / z;
+  ctx.drawImage(video, (C.sw - sw) / 2, (C.sh - sh) / 2, sw, sh, x, y, w, h);
+  if (shot.kind === 'cam') {
+    const g = ctx.createLinearGradient(0, y + h - 150, 0, y + h); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx.fillStyle = g; ctx.fillRect(x, y + h - 150, w, 150);
+    ctx.font = font(34, 800); ctx.fillStyle = 'rgba(255,255,255,0.92)'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(shot.name, x + 30, y + h - 30);
+  }
+  ctx.restore();
+  ctx.save(); roundRect(x, y, w, h, 22); ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+  if (shot.kind === 'grid') gridInserts(shot, t, x, y, w, h);
+}
+
+function gridInserts(shot, t, x, y, w, h) {
+  // EV tag pill above the card, slides in on tag change
+  const tag = EV_TAG[shot.arg];
+  const a = easeOut((t - shot.t0) / 0.3);
+  ctx.save(); ctx.globalAlpha = a; ctx.font = font(30, 800);
+  const tw = ctx.measureText(tag).width, px = x + 6 - 30 * (1 - a), py = y - 74;
+  roundRect(px, py, tw + 56, 54, 10); ctx.fillStyle = 'rgba(14,17,40,0.95)'; ctx.fill();
+  ctx.fillStyle = shot.arg === 'pp' ? '#f08a8a' : shot.arg === 'strategy' ? WHITE : '#9fe3a6';
+  ctx.fillRect(px, py, 10, 54);
+  ctx.fillStyle = WHITE; ctx.textBaseline = 'middle'; ctx.fillText(tag, px + 32, py + 29);
+  ctx.restore();
+  if (shot.arg !== 'strategy') return;
+  // CALL 95.7% bar insert (value read from the solver screen at this moment)
+  const w0 = TL.groups.flatMap(g => g.lines.flat()).find(wd => wd.w === 'CALLING' && wd.t >= shot.t0 && wd.t < shot.t1);
+  if (!w0) return;
+  const k = easeOut((t - w0.t) / 0.9), show = easeOut((t - w0.t + 0.1) / 0.25);
+  if (show <= 0) return;
+  const val = 95.7 * k;
+  ctx.save(); ctx.globalAlpha = show;
+  const bx = x + 40, by = y + h - 200, bw = w - 80;
+  roundRect(x + 20, by - 30, w - 40, 190, 18); ctx.fillStyle = 'rgba(9,11,26,0.92)'; ctx.fill();
+  ctx.font = font(34, 800); ctx.fillStyle = WHITE; ctx.textBaseline = 'alphabetic'; ctx.fillText('BIG BLIND CALLS', bx, by + 30);
+  ctx.font = font(92, 900); ctx.fillStyle = RED; const s = `${val.toFixed(1)}%`;
+  ctx.fillText(s, bx + bw - ctx.measureText(s).width, by + 66);
+  roundRect(bx, by + 98, bw, 22, 11); ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fill();
+  roundRect(bx, by + 98, Math.max(22, bw * val / 100), 22, 11); ctx.fillStyle = RED; ctx.fill();
+  ctx.restore();
+}
+
+// caption layout cache: per group, per line -> words with x offsets and baseline y
+const LAYOUT = new Map();
+function layoutGroup(g) {
+  if (LAYOUT.has(g)) return LAYOUT.get(g);
+  let y = CAP_Y; const lines = [];
+  for (const line of g.lines) {
+    ctx.font = font(50); const space = ctx.measureText(' ').width * 0.9;
+    let width = 0; const ws = line.map(wd => { const S = STYLE[wd.s]; ctx.font = font(S.px, S.w); const mw = ctx.measureText(wd.w).width; return { ...wd, S, mw }; });
+    width = ws.reduce((a, w) => a + w.mw, 0) + space * (ws.length - 1);
+    const k = Math.min(1, CAP_MAXW / width);
+    const maxPx = Math.max(...ws.map(w => w.S.px)) * k;
+    y += maxPx * (maxPx > 80 ? 0.86 : 1.0);
+    let x = CAP_X;
+    for (const w of ws) { w.x = x; w.px = w.S.px * k; x += w.mw * k + space; }
+    lines.push({ ws, y }); y += maxPx > 80 ? 22 : 16;
+  }
+  const L = { lines, bottom: y };
+  LAYOUT.set(g, L); return L;
+}
+
+function captions(t, overBroll) {
+  for (const g of TL.groups) {
+    if (t < g.t - 0.1 || t > g.end) continue;
+    const L = layoutGroup(g);
+    const e = clamp01((t - (g.end - 0.18)) / 0.18);
+    ctx.save();
+    if (e > 0) { ctx.filter = `blur(${(e * 10).toFixed(1)}px)`; ctx.globalAlpha = 1 - e; }
+    for (const line of L.lines) for (const w of line.ws) {
+      const a = (t - w.t + 0.05) / 0.16;
+      if (a <= 0) continue;
+      const big = w.s !== 's';
+      const sc = big ? 1 + 0.14 * (1 - easeBack(a)) : 1;
+      const dy = (1 - easeOut(a)) * (big ? 26 : 16);
+      ctx.save();
+      ctx.globalAlpha *= clamp01(a * 1.4);
+      ctx.translate(w.x, line.y + dy); ctx.scale(sc, sc);
+      ctx.font = font(w.px, w.S.w); ctx.textBaseline = 'alphabetic';
+      ctx.shadowColor = w.s === 'r' ? 'rgba(238,59,51,0.35)' : 'rgba(0,0,0,0.45)';
+      ctx.shadowBlur = overBroll ? 28 : (w.s === 'r' ? 34 : 14);
+      ctx.fillStyle = w.S.col; ctx.fillText(w.w, 0, 0);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+function endCard(t) {
+  const L = TL.logo;
+  const a = easeOut((t - (L - 0.35)) / 0.35);
+  if (a <= 0) return;
+  const lw = 640, lh = lw * LOGO.height / LOGO.width;
+  const s = 1.08 - 0.08 * easeOut((t - (L - 0.35)) / 0.6) + 0.015 * clamp01((t - L) / 3);
+  ctx.save();
+  ctx.globalAlpha = a; ctx.filter = `blur(${((1 - a) * 10).toFixed(1)}px)`;
+  ctx.translate(W / 2, 880); ctx.scale(s, s);
+  ctx.drawImage(LOGO, -lw / 2, -lh / 2, lw, lh);
+  ctx.restore();
+  const c = easeOut((t - L - 0.45) / 0.4);
+  if (c > 0) {
+    ctx.save(); ctx.globalAlpha = c; ctx.font = font(38, 800); ctx.textBaseline = 'alphabetic';
+    const txt = 'FULL EPISODE ON YOUTUBE', tw = ctx.measureText(txt).width;
+    ctx.fillStyle = WHITE; ctx.fillText(txt, (W - tw) / 2, 1110 + 14 * (1 - c));
+    ctx.fillStyle = RED; ctx.fillRect((W - 120 * c) / 2, 1140 + 14 * (1 - c), 120 * c, 6);
+    ctx.restore();
+  }
+}
+
+window.renderFrame = async (t) => {
+  ctx.filter = 'none'; ctx.globalAlpha = 1;
+  background(t);
+  const shot = TL.shots.find(s => t >= s.t0 && t < s.t1);
+  const out = clamp01((t - (TL.logo - 0.6)) / 0.3);   // content fades before the logo hits
+  if (shot && out < 1) {
+    await seek(t + 0.5 / FPS);
+    ctx.save(); ctx.globalAlpha = 1 - out;
+    media(shot, t);
+    header(1);
+    captions(t, shot.kind === 'broll');
+    ctx.restore();
+  }
+  endCard(t);
+  // vignette + grain
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.75);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,0.38)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.globalAlpha = 0.05; ctx.globalCompositeOperation = 'overlay';
+  ctx.drawImage(GRAIN[Math.floor(t * FPS) % GRAIN.length], 0, 0, W, H);
+  ctx.restore();
+};
+</script>
+</body></html>

@@ -1,0 +1,56 @@
+<!doctype html>
+<!-- Scene starter. Copy into the run folder as scene.html and replace the body of renderFrame.
+     Rule: everything on screen is a pure function of t (seconds). No Date.now(), no requestAnimationFrame loops,
+     no Math.random() without the seeded rng below. -->
+<html><head><meta charset="utf-8">
+<style>html,body{margin:0;background:#000;overflow:hidden}canvas,svg{position:absolute;inset:0}</style>
+<script type="importmap">{"imports":{"three":"./tools/node_modules/three/build/three.module.js","three/addons/":"./tools/node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<canvas id="gl"></canvas>
+<canvas id="c2d"></canvas>
+<script type="module">
+import * as THREE from 'three';
+
+window.SCENE = { width: 1920, height: 1080, fps: 30, duration: 10 };
+const { width: W, height: H } = window.SCENE;
+
+// optional: audio analysis from analyze_audio.py
+const A = await fetch('./analysis.json').then(r => r.json()).catch(() => null);
+const curve = (name, t) => A ? A[name][Math.min(A[name].length - 1, Math.floor(t / A.curve_step_s))] ?? 0 : 0;
+const beatPulse = (t, decay = 6) => { // 1 on each beat, decays to 0
+  if (!A) return 0; let last = -1e9; for (const b of A.beats) { if (b > t) break; last = b; } return Math.exp(-(t - last) * decay);
+};
+
+// seeded rng
+let seed = 1; const rng = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const ease = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const clamp01 = x => Math.max(0, Math.min(1, x));
+
+// 3D layer
+const renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: true, preserveDrawingBuffer: true });
+renderer.setSize(W, H, false);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, W / H, 0.1, 100);
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+const sun = new THREE.DirectionalLight(0xffffff, 2); sun.position.set(3, 5, 4); scene.add(sun);
+const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: 0xff3366 }));
+scene.add(cube);
+
+// 2D overlay layer
+c2d.width = W; c2d.height = H; const ctx = c2d.getContext('2d');
+
+window.renderFrame = (t) => {
+  const p = beatPulse(t);
+  cube.rotation.set(t * 0.7, t, 0);
+  cube.scale.setScalar(1 + p * 0.3 + curve('energy_curve', t) * 0.5);
+  camera.position.set(Math.sin(t * 0.3) * 4, 1.5, Math.cos(t * 0.3) * 4); camera.lookAt(0, 0, 0);
+  renderer.render(scene, camera);
+
+  ctx.clearRect(0, 0, W, H);
+  ctx.globalAlpha = ease(clamp01(t / 1.5));
+  ctx.fillStyle = '#fff'; ctx.font = '700 96px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText('TITLE', W / 2, H * 0.85);
+  ctx.globalAlpha = 1;
+};
+window.ready = Promise.resolve();
+</script></body></html>
