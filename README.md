@@ -13,7 +13,7 @@ Usage, once installed: `/make-video <idea>`.
 
 ### Instructions for Claude
 1. Clone the repo into the user's skills folder:
-   `git clone <this-repo-url> ~/.claude/skills/make-video`.
+   `git clone https://github.com/anton-yefanov/make-video-skill ~/.claude/skills/make-video`.
    If that folder already exists, run `git -C ~/.claude/skills/make-video pull` instead.
 2. Run `~/.claude/skills/make-video/setup.sh`.
    - If it reports missing tools on macOS, install them with `brew install node ffmpeg python`, then re-run it.
